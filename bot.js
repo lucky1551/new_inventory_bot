@@ -992,7 +992,7 @@ setupEventHandlers(saveCreds) {
           await this.handleUpdating(jid, userMessage, userState);
           break;
         case BotState.UPDATING_VALUE:
-          await this.handleUpdatingValue(jid, message.message.conversation.trim(), userState);
+          await this.handleUpdatingValue(jid, msg.message.conversation.trim(), userState);
           break;
         case BotState.ADDING_ITEM:
           await this.handleAddingItem(jid, msg.message.conversation.trim(), userState);
@@ -1112,15 +1112,61 @@ setupEventHandlers(saveCreds) {
     this.userStates.set(jid, userState);
   }
 
+  // async handleUpdating(jid, message, userState) {
+  //   if (message === "yes") {
+  //     const availableFields = Object.keys(userState.currentItem).map(field => `📌 ${field}`).join("\n");
+  //     await this.sendMessage(jid, MESSAGES.UPDATE_PROMPT(availableFields));
+  //   } else if (message === "no") {
+  //     await this.sendMessage(jid, "👍 Thank you! Type 'hi' to start again.");
+  //     userState.state = BotState.IDLE;
+  //   } else if (Object.keys(userState.currentItem).map(key => key.toLowerCase()).includes(message)) {
+  //     userState.updateField = Object.keys(userState.currentItem).find(key => key.toLowerCase() === message);
+  //     userState.state = BotState.UPDATING_VALUE;
+  //     await this.sendMessage(jid, MESSAGES.UPDATE_VALUE_PROMPT(userState.updateField));
+  //   } else {
+  //     await this.sendMessage(jid, MESSAGES.INVALID_INPUT);
+  //   }
+  //   this.userStates.set(jid, userState);
+  // }
+
+  // async handleUpdatingValue(jid, value, userState) {
+  //   const fieldName = userState.updateField;
+  //   if (fieldName.toLowerCase() === "min level") {
+  //     const maxLevel = userState.currentItem["Max Level"];
+  //     if (this.isDefined(maxLevel) && (isNaN(value) || isNaN(maxLevel) || Number(value) > Number(maxLevel))) {
+  //       await this.sendMessage(jid, isNaN(value) ? MESSAGES.INVALID_NUMERIC : MESSAGES.INVALID_MIN_LEVEL(maxLevel));
+  //       return;
+  //     }
+  //   } else if (fieldName.toLowerCase() === "max level") {
+  //     const minLevel = userState.currentItem["Min Level"];
+  //     if (this.isDefined(minLevel) && (isNaN(value) || isNaN(minLevel) || Number(value) < Number(minLevel))) {
+  //       await this.sendMessage(jid, isNaN(value) ? MESSAGES.INVALID_NUMERIC : MESSAGES.INVALID_MAX_LEVEL(minLevel));
+  //       return;
+  //     }
+  //   }
+
+  //   userState.currentItem[fieldName] = value;
+  //   await this.updateExcelFile();
+  //   await this.sendMessage(jid, MESSAGES.SUCCESS_UPDATE(fieldName, value));
+  //   await this.sendMessage(jid, MESSAGES.UPDATE_CONFIRM);
+  //   userState.state = BotState.UPDATING;
+  //   this.userStates.set(jid, userState);
+  // }
+
   async handleUpdating(jid, message, userState) {
+    console.log('--- handleUpdating ---');
+    console.log('userState:', userState);
+    console.log('message:', message);
+
     if (message === "yes") {
       const availableFields = Object.keys(userState.currentItem).map(field => `📌 ${field}`).join("\n");
       await this.sendMessage(jid, MESSAGES.UPDATE_PROMPT(availableFields));
     } else if (message === "no") {
       await this.sendMessage(jid, "👍 Thank you! Type 'hi' to start again.");
       userState.state = BotState.IDLE;
-    } else if (Object.keys(userState.currentItem).map(key => key.toLowerCase()).includes(message)) {
-      userState.updateField = Object.keys(userState.currentItem).find(key => key.toLowerCase() === message);
+    } else if (Object.keys(userState.currentItem).map(key => key.toLowerCase().trim()).includes(message.toLowerCase().trim())) {
+      userState.updateField = Object.keys(userState.currentItem).find(key => key.toLowerCase().trim() === message.toLowerCase().trim());
+      console.log('Selected field to update:', userState.updateField);
       userState.state = BotState.UPDATING_VALUE;
       await this.sendMessage(jid, MESSAGES.UPDATE_VALUE_PROMPT(userState.updateField));
     } else {
@@ -1130,7 +1176,21 @@ setupEventHandlers(saveCreds) {
   }
 
   async handleUpdatingValue(jid, value, userState) {
+    console.log('--- handleUpdatingValue ---');
+    console.log('userState:', userState);
+    console.log('Value to update:', value);
+
     const fieldName = userState.updateField;
+    if (!fieldName) {
+      console.error('Error: updateField is not set in userState.');
+      await this.sendMessage(jid, MESSAGES.ERROR);
+      userState.state = BotState.UPDATING;
+      this.userStates.set(jid, userState);
+      return;
+    }
+
+    console.log('Before validation:', JSON.stringify(userState.currentItem));
+
     if (fieldName.toLowerCase() === "min level") {
       const maxLevel = userState.currentItem["Max Level"];
       if (this.isDefined(maxLevel) && (isNaN(value) || isNaN(maxLevel) || Number(value) > Number(maxLevel))) {
@@ -1145,12 +1205,29 @@ setupEventHandlers(saveCreds) {
       }
     }
 
-    userState.currentItem[fieldName] = value;
-    await this.updateExcelFile();
-    await this.sendMessage(jid, MESSAGES.SUCCESS_UPDATE(fieldName, value));
-    await this.sendMessage(jid, MESSAGES.UPDATE_CONFIRM);
-    userState.state = BotState.UPDATING;
-    this.userStates.set(jid, userState);
+    try {
+      console.log('Before update:', JSON.stringify(this.data));
+      const itemIndex = this.data.findIndex(item => item[SERIAL_NUMBER_FIELD] === userState.currentItem[SERIAL_NUMBER_FIELD]);
+      if (itemIndex !== -1) {
+        this.data[itemIndex][fieldName] = value;
+        userState.currentItem = this.data[itemIndex]; // Keep currentItem in sync
+        console.log('After update:', JSON.stringify(this.data));
+        await this.updateExcelFile();
+        await this.sendMessage(jid, MESSAGES.SUCCESS_UPDATE(fieldName, value));
+        await this.sendMessage(jid, MESSAGES.UPDATE_CONFIRM);
+        userState.state = BotState.UPDATING;
+      } else {
+        console.error('Error: Current item not found in data array for update.');
+        await this.sendMessage(jid, MESSAGES.ERROR);
+        userState.state = BotState.UPDATING;
+      }
+    } catch (error) {
+      console.error('Error during update process:', error);
+      await this.sendMessage(jid, MESSAGES.ERROR);
+      userState.state = BotState.UPDATING;
+    } finally {
+      this.userStates.set(jid, userState);
+    }
   }
 
   async handleAddingItem(jid, value, userState) {
