@@ -721,12 +721,13 @@ const express = require('express');
 require('dotenv').config();
 
 // Constants
+const ADMIN_PASSWORD = "Luckyferro"; 
 const FILE_PATH = "./Inventory_Register.xlsx";
 const AUTH_DIR = './baileys_auth';
 const SERIAL_NUMBER_FIELD = "S.No";
 const REQUIRED_FIELDS = ["Material Code", "Item Description"];
 const MESSAGES = {
-  WELCOME: "👋 Hi! Please choose an option:\n1. See/Update details of existing data\n2. Add a new item\n3. List all items\n4. Delete an item\nType 'help' for more commands.",
+  WELCOME: "👋 Hi! Please choose an option:\n1. See/Update details of existing data\n2. Add a new item\n3. Download Inventory Excel File\n4. Delete an item\nType 'help' for more commands.",
   SEARCH_PROMPT: "🔍 Please enter a 🔢 Material Code or 🏷️ Item Description to check details (or type 'cancel' to go back):",
   DELETE_PROMPT: "🔍 Please enter a 🔢 Material Code or 🏷️ Item Description to delete (or type 'cancel' to go back):",
   ADD_PROMPT: (field) => `✏️ Enter ${field} (or type 'cancel' to go back):`,
@@ -748,15 +749,17 @@ const MESSAGES = {
   NO_ITEMS_FOUND: "❌ No matching Material Code or Item Description found. Please try again.",
   INVALID_SELECTION: "⚠️ Invalid selection. Please try again.",
   CANCEL: "👍 Operation cancelled. Type 'hi' to start again.",
-  HELP: "📖 Available commands:\n- 'hi': Start the bot\n- 'help': Show this message\n- 'cancel': Cancel the current operation\nChoose an option:\n1. See/Update details\n2. Add a new item\n3. List all items\n4. Delete an item",
+  HELP: "📖 Available commands:\n- 'hi': Start the bot\n- 'help': Show this message\n- 'cancel': Cancel the current operation\nChoose an option:\n1. See/Update details\n2. Add a new item\n3. Download Inventory Excel File\n4. Delete an item",
   LOADING: "⏳ Loading data, please wait...",
-  LIST_ITEMS: (items) => `📋 *All Items:*\n${items}\nType 'hi' to go back to the main menu.`,
+  LIST_ITEMS: (items) => `📋 *All Items:*\n${items}\nType 'hi' to go back to the main menu.`, // No longer directly used
   MISSING_REQUIRED_FIELDS: "❌ Both Material Code and Item Description are required. Item not added. Type 'hi' to start again.",
   INVALID_MIN_LEVEL: (maxLevel) => `❌ Invalid input. Min Level must be <= Max Level (${maxLevel}). Please enter a valid value.`,
   INVALID_MAX_LEVEL: (minLevel) => `❌ Invalid input. Max Level must be >= Min Level (${minLevel}). Please enter a valid value.`,
   INVALID_NUMERIC: "❌ Min Level and Max Level must be numeric values. Please enter a valid number.",
-  DUPLICATE_MATERIAL_CODE_PROMPT: (item) => 
-    `⚠️ The Material Code already exists:\n${item["S.No"]} - ${item["Material Code"]} - ${item["Item Description"]}\nWould you like to update this item? (yes/no)`
+  DUPLICATE_MATERIAL_CODE_PROMPT: (item) =>
+    `⚠️ The Material Code already exists:\n${item["S.No"]} - ${item["Material Code"]} - ${item["Item Description"]}\nWould you like to update this item? (yes/no)`,
+  PASSWORD_PROMPT: "🔒 Please enter the admin password to proceed:",
+  PASSWORD_INCORRECT: "❌ Incorrect password. Access denied. Please try again or type 'hi' to return to the main menu."
 };
 
 // Google Drive Configuration
@@ -869,10 +872,11 @@ const BotState = {
   UPDATING_VALUE: "UPDATING_VALUE",
   ADDING_ITEM: "ADDING_ITEM",
   ADDING_CONFIRM: "ADDING_CONFIRM",
-  LISTING_ITEMS: "LISTING_ITEMS",
   DELETING_ITEM: "DELETING_ITEM",
   SELECTING_ITEM_TO_DELETE: "SELECTING_ITEM_TO_DELETE",
-  HANDLING_DUPLICATE: "HANDLING_DUPLICATE"
+  HANDLING_DUPLICATE: "HANDLING_DUPLICATE",
+  AWAITING_PASSWORD: "AWAITING_PASSWORD" 
+
 };
 
 class InventoryBot {
@@ -886,7 +890,23 @@ class InventoryBot {
     this.sock = null;
     this.driveService = drive;
 
+    this.loadInitialData(); // Call your data loading function
     this.initializeServices();
+  }
+
+  async loadInitialData() { // Create this async function
+    console.log('Starting initial data load...');
+    try {
+      await this.loadExcelFile(); // Assuming your data loading function is named this
+      console.log('Initial data load complete. this.data.length:', this.data.length);
+      if (this.data.length > 0) {
+        console.log('First item keys:', Object.keys(this.data[0]));
+      } else {
+        console.log('this.data array is empty!');
+      }
+    } catch (error) {
+      console.error('Error during initial data load:', error);
+    }
   }
 
   async initializeServices() {
@@ -956,67 +976,83 @@ setupEventHandlers(saveCreds) {
 
   async handleMessage(msg) {
     console.log('handleMessage called');
-  console.log('Incoming Message:', msg);
-  if (msg.key.fromMe || !msg.message?.conversation) return;    
+    console.log('Incoming Message:', msg);
+    if (msg.key.fromMe || !msg.message?.conversation) return;
     const jid = msg.key.remoteJid;
-    const userMessage = msg.message.conversation.trim().toLowerCase();
-    const userState = this.userStates.get(jid) || { state: BotState.IDLE };
+    const userMessage = msg.message.conversation.trim();
+    const userState = this.userStates.get(jid) || { state: BotState.IDLE, isAuthenticated: false };
+    this.userStates.set(jid, userState); // Ensure userState is always set
 
     try {
       console.log(`[${userState.state}] ${userMessage}`);
 
-      if (userMessage === 'cancel' && userState.state !== BotState.IDLE) {
+      if (userMessage.toLowerCase() === 'cancel' && userState.state !== BotState.IDLE) {
         await this.handleCancelCommand(jid, userState);
         return;
       }
 
-      if (userMessage === 'help') {
+      if (userMessage.toLowerCase() === 'help') {
         await this.sendMessage(jid, MESSAGES.HELP);
         return;
       }
 
       switch(userState.state) {
         case BotState.IDLE:
-          await this.handleIdleState(jid, userMessage);
+          await this.handleIdleState(jid, userMessage.toLowerCase());
           break;
         case BotState.INITIAL_MENU:
           await this.handleInitialMenu(jid, userMessage);
           break;
         case BotState.SEARCHING:
-          await this.handleSearchState(jid, msg.message.conversation.trim(), userState);
+          await this.handleSearchState(jid, userMessage, userState);
           break;
         case BotState.SELECTING_ITEM:
-          await this.handleSelectingItem(jid, userMessage, userState);
+          const selectedIndex = parseInt(userMessage);
+          if (!isNaN(selectedIndex) && selectedIndex >= 1 && selectedIndex <= userState.foundItems.length) {
+            await this.handleSelectingItem(jid, userMessage, userState);
+          } else {
+            console.log('Treating input as new search term:', userMessage); // Debugging log
+            userState.foundItems = [];
+            userState.state = BotState.SEARCHING;
+            await this.handleSearchState(jid, userMessage, userState);
+          }
           break;
         case BotState.UPDATING:
-          await this.handleUpdating(jid, userMessage, userState);
+          await this.handleUpdating(jid, userMessage.toLowerCase(), userState);
           break;
         case BotState.UPDATING_VALUE:
-          await this.handleUpdatingValue(jid, msg.message.conversation.trim(), userState);
+          await this.handleUpdatingValue(jid, userMessage.trim(), userState);
           break;
         case BotState.ADDING_ITEM:
-          await this.handleAddingItem(jid, msg.message.conversation.trim(), userState);
+          await this.handleAddingItem(jid, userMessage.trim(), userState);
           break;
         case BotState.ADDING_CONFIRM:
-          await this.handleAddingConfirm(jid, userMessage, userState);
-          break;
-        case BotState.LISTING_ITEMS:
-          await this.handleListingItems(jid, userState);
+          await this.handleAddingConfirm(jid, userMessage.toLowerCase(), userState);
           break;
         case BotState.DELETING_ITEM:
-          await this.handleDeletingItem(jid, msg.message.conversation.trim(), userState);
+          await this.handleDeletingItem(jid, userMessage, userState);
           break;
         case BotState.SELECTING_ITEM_TO_DELETE:
-          await this.handleSelectingItemToDelete(jid, userMessage, userState);
+          const deleteIndex = parseInt(userMessage);
+          if (!isNaN(deleteIndex) && deleteIndex >= 1 && deleteIndex <= userState.foundItems.length) {
+            await this.handleSelectingItemToDelete(jid, userMessage, userState);
+          } else {
+            userState.foundItems = [];
+            userState.state = BotState.DELETING_ITEM;
+            await this.handleDeletingItem(jid, userMessage, userState);
+          }
           break;
         case BotState.HANDLING_DUPLICATE:
-          await this.handleDuplicate(jid, userMessage, userState);
+          await this.handleDuplicate(jid, userMessage.toLowerCase(), userState);
+          break;
+        case BotState.AWAITING_PASSWORD:
+          await this.handleAwaitingPassword(jid, userMessage, userState);
           break;
       }
     } catch (error) {
       console.error('Message handling error:', error);
       await this.sendMessage(jid, MESSAGES.ERROR);
-      this.userStates.set(jid, { state: BotState.IDLE });
+      this.userStates.set(jid, { state: BotState.IDLE, isAuthenticated: userState.isAuthenticated || false }); // Preserve auth status on error
     }
   }
 
@@ -1034,40 +1070,43 @@ setupEventHandlers(saveCreds) {
   }
 
   async handleIdleState(jid, message) {
+    const userState = this.userStates.get(jid) || { state: BotState.IDLE, isAuthenticated: false };
+    this.userStates.set(jid, userState); // Ensure userState exists
+
     if (message === 'hi') {
-      await this.loadExcelFile();
-      const userState = {
-        state: BotState.INITIAL_MENU,
-        fieldsToAdd: Object.keys(this.data[0] || {}).filter(field => 
-          field.toLowerCase() !== SERIAL_NUMBER_FIELD.toLowerCase() &&
-          !REQUIRED_FIELDS.map(f => f.toLowerCase()).includes(field.toLowerCase())
-        )
-      };
-      this.userStates.set(jid, userState);
-      await this.sendMessage(jid, MESSAGES.WELCOME);
+      if (!userState.isAuthenticated) {
+        userState.state = BotState.AWAITING_PASSWORD;
+        await this.sendMessage(jid, MESSAGES.PASSWORD_PROMPT);
+      } else {
+        userState.state = BotState.INITIAL_MENU;
+        await this.sendMessage(jid, MESSAGES.WELCOME);
+      }
+    } else if (message === 'help') {
+      await this.sendMessage(jid, MESSAGES.HELP);
+    } else {
+      await this.sendMessage(jid, MESSAGES.INVALID_INPUT);
     }
   }
 
   async handleInitialMenu(jid, message) {
     const userState = this.userStates.get(jid);
-    
+
     switch(message) {
-      case '1':
+      case '1': // See/Update
         userState.state = BotState.SEARCHING;
         await this.sendMessage(jid, MESSAGES.SEARCH_PROMPT);
         break;
-      case '2':
+      case '2': // Add new item
         userState.state = BotState.ADDING_ITEM;
         userState.newItem = { [SERIAL_NUMBER_FIELD]: this.generateSerialNumber() };
         userState.currentFieldIndex = 0;
         userState.requiredFieldsEntered = 0;
         await this.sendMessage(jid, MESSAGES.ADD_PROMPT(REQUIRED_FIELDS[0]));
         break;
-      case '3':
-        userState.state = BotState.LISTING_ITEMS;
-        await this.handleListingItems(jid, userState);
+      case '3': // Download Excel
+        await this.sendExcelFile(jid);
         break;
-      case '4':
+      case '4': // Delete item
         userState.state = BotState.DELETING_ITEM;
         await this.sendMessage(jid, MESSAGES.DELETE_PROMPT);
         break;
@@ -1077,26 +1116,30 @@ setupEventHandlers(saveCreds) {
     this.userStates.set(jid, userState);
   }
 
-  async handleSearchState(jid, input, userState) {
-    const searchTerm = input.toLowerCase().trim();
-    const foundItems = this.data.filter(entry =>
-      (entry["Material Code"]?.toString().toLowerCase().includes(searchTerm)) ||
-      (entry["Item Description"]?.toLowerCase().includes(searchTerm))
-    );
-  
-    if (foundItems.length === 1) {
-      userState.currentItem = foundItems[0];
-      userState.state = BotState.UPDATING;
-      await this.sendMessage(jid, MESSAGES.ITEM_DETAILS(userState.currentItem));
-    } else if (foundItems.length > 1) {
-      userState.foundItems = foundItems;
-      userState.state = BotState.SELECTING_ITEM;
-      const itemsList = foundItems.map((item, index) =>
-        `${index + 1}. ${item[SERIAL_NUMBER_FIELD]} - ${item["Material Code"]} - ${item["Item Description"]}`
-      ).join("\n");
-      await this.sendMessage(jid, MESSAGES.SELECT_ITEM_PROMPT(itemsList));
-    } else {
+  async handleSearchState(jid, query, userState) {
+    
+    const searchTerm = query.trim().toLowerCase();
+    console.log('Search Term:', searchTerm);
+    console.log('First few items in this.data:', this.data.slice(0, 3)); // Log a few items
+    const results = this.data.filter(item => {
+      const materialCode = item["Material Code"]?.toString().toLowerCase() || '';
+      const itemDescription = item["Item Description"]?.toString().toLowerCase() || '';
+      const match = materialCode.includes(searchTerm) || itemDescription.includes(searchTerm);
+      console.log(`Checking item: ${item["Material Code"]} - ${item["Item Description"]}, Material Code Match: ${materialCode.includes(searchTerm)}, Description Match: ${itemDescription.includes(searchTerm)}`);
+      return match;
+    });
+
+    if (results.length === 0) {
       await this.sendMessage(jid, MESSAGES.NO_ITEMS_FOUND);
+      userState.state = BotState.SEARCHING; // Stay in searching state
+    } else if (results.length === 1) {
+      userState.foundItems = results;
+      await this.handleSelectingItem(jid, '1', userState); // Directly select if only one result
+    } else {
+      userState.foundItems = results;
+      const itemList = results.map((item, index) => `${index + 1}. ${item[SERIAL_NUMBER_FIELD]} - ${item["Material Code"]} - ${item["Item Description"]}`).join("\n");
+      await this.sendMessage(jid, MESSAGES.SELECT_ITEM_PROMPT(itemList + "\n\nReply with the *number* to select, or type a *new search term* (or 'cancel')."));
+      userState.state = BotState.SELECTING_ITEM; // Transition to selecting, but with extended functionality
     }
     this.userStates.set(jid, userState);
   }
@@ -1301,15 +1344,38 @@ setupEventHandlers(saveCreds) {
     this.userStates.set(jid, userState);
   }
 
-  async handleListingItems(jid, userState) {
-    const itemsList = this.data.map((item, index) => 
-      `${index + 1}. ${item[SERIAL_NUMBER_FIELD]} - ${item["Material Code"]} - ${item["Item Description"]}`
-    ).join("\n");
-    await this.sendMessage(jid, MESSAGES.LIST_ITEMS(itemsList));
-    userState.state = BotState.IDLE;
-    this.userStates.set(jid, userState);
-  }
+  // async handleListingItems(jid, userState) {
+  //   const itemsList = this.data.map((item, index) => 
+  //     `${index + 1}. ${item[SERIAL_NUMBER_FIELD]} - ${item["Material Code"]} - ${item["Item Description"]}`
+  //   ).join("\n");
+  //   await this.sendMessage(jid, MESSAGES.LIST_ITEMS(itemsList));
+  //   userState.state = BotState.IDLE;
+  //   this.userStates.set(jid, userState);
+  // }
+  async sendExcelFile(jid) {
+    try {
+      if (!fs.existsSync(FILE_PATH)) {
+        await this.downloadFileFromGoogleDrive(); // Ensure the file exists locally
+        if (!fs.existsSync(FILE_PATH)) {
+          await this.sendMessage(jid, MESSAGES.ERROR); // File still not found
+          return;
+        }
+      }
 
+      await this.sock.sendMessage(
+        jid,
+        {
+          document: { url: FILE_PATH }, // For local files, you can use the path
+          mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          fileName: 'Inventory_Register.xlsx'
+        }
+      );
+      await this.sendMessage(jid, "✅ Inventory Excel file sent!");
+    } catch (error) {
+      console.error('Error sending Excel file:', error);
+      await this.sendMessage(jid, MESSAGES.ERROR);
+    }
+  }
   async handleDeletingItem(jid, input, userState) {
     const searchTerm = input.toLowerCase().trim();
     const foundItems = this.data.filter(entry =>
@@ -1365,6 +1431,17 @@ setupEventHandlers(saveCreds) {
       userState.state = BotState.IDLE;
     } else {
       await this.sendMessage(jid, MESSAGES.INVALID_INPUT);
+    }
+    this.userStates.set(jid, userState);
+  }
+  async handleAwaitingPassword(jid, password, userState) {
+    if (password === ADMIN_PASSWORD) {
+      userState.isAuthenticated = true; // Set authentication flag
+      userState.state = BotState.INITIAL_MENU; // Go directly to the main menu
+      await this.sendMessage(jid, MESSAGES.WELCOME);
+    } else {
+      await this.sendMessage(jid, MESSAGES.PASSWORD_INCORRECT);
+      userState.state = BotState.IDLE; // Go back to idle to wait for 'hi' again
     }
     this.userStates.set(jid, userState);
   }
