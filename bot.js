@@ -1096,13 +1096,20 @@ setupEventHandlers(saveCreds) {
         userState.state = BotState.SEARCHING;
         await this.sendMessage(jid, MESSAGES.SEARCH_PROMPT);
         break;
-      case '2': // Add new item
-        userState.state = BotState.ADDING_ITEM;
-        userState.newItem = { [SERIAL_NUMBER_FIELD]: this.generateSerialNumber() };
-        userState.currentFieldIndex = 0;
-        userState.requiredFieldsEntered = 0;
-        await this.sendMessage(jid, MESSAGES.ADD_PROMPT(REQUIRED_FIELDS[0]));
-        break;
+        case '2': // Add new item
+  userState.state = BotState.ADDING_ITEM;
+  userState.newItem = { [SERIAL_NUMBER_FIELD]: this.generateSerialNumber() };
+  userState.currentFieldIndex = 0;
+  userState.requiredFieldsEntered = 0;
+  // Dynamically determine the optional fields from the Excel header row:
+  userState.fieldsToAdd = this.headerRow.filter(field => 
+    field !== SERIAL_NUMBER_FIELD && !REQUIRED_FIELDS.includes(field)
+  );
+  await this.sendMessage(jid, MESSAGES.ADD_PROMPT(REQUIRED_FIELDS[0]));
+  break;
+
+
+      
       case '3': // Download Excel
         await this.sendExcelFile(jid);
         break;
